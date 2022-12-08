@@ -1,18 +1,19 @@
 # Databricks notebook source
-import pymssql
+!pip install pysal
+!pip install descartes
+
+# COMMAND ----------
+
+# Databricks notebook source
 import pandas as pd
 import numpy as np
 import time
-import sqlalchemy
-import sqlite3
 from itertools import count
 import pysal
 import esda
-import pandas as pd
 import geopandas as gpd
 from geopandas import GeoDataFrame
 import libpysal as lps
-import numpy as np
 # import matplotlib.pyplot as plt
 # from pysal.mapclassify import K
 # from seaborn.palettes import color_palette
@@ -20,8 +21,6 @@ from shapely.geometry import Point
 # import openpyxl
 from esda.getisord import G_Local
 import datetime as dt
-import pyodbc
-
 
 # COMMAND ----------
 
@@ -34,47 +33,34 @@ import pyodbc
 
 # COMMAND ----------
 
+from keys import keys
 
+database_host = keys["database_host"]
+database_port = keys["database_port"]
+database_name = keys["database_name"]
+user = keys["user"]
+password = keys["password"]
 
-# COMMAND ----------
+table = "dbo.CRD_ACLED"
+url = f"jdbc:sqlserver://{database_host}:{database_port};databaseName={database_name};"
 
-conn = pyodbc.connect(server = 'undp-cb-sqlmi-crd-dev.f1de0fd669a7.database.windows.net,1433',
-                      database = 'UNDP_DW_CRD',
-                      user = 'sqlUNDPCRDReader',
-                      password = '7vN2c8ghfAnT2g8g',
-                      port=1433,
-                      driver='{ODBC Driver 17 for SQL Server}')
+df = (spark.read
+  .format("com.microsoft.sqlserver.jdbc.spark")
+  .option("url", url)
+  .option("dbtable", table)
+  .option("user", user)
+  .option("password", password)
+  .load()
+)
 
-query = "SELECT * FROM CRD_ACLED WHERE [CountryFK] = 3 AND [ACLED_Year] = 2021"
-
-data = pd.read_sql(query, conn)
-conflict = data.copy()
-
-# COMMAND ----------
-
-pyodbc.drivers()
-data.head()
-
-# COMMAND ----------
-
-#for when i couldn't get pyodbc to behave on m1 chip
-# conn = pymssql.connect(server = '10.200.8.20',
-#                       database = 'UNDP_DW_CRD',
-#                       user = 'sqlUNDPCRDReader',
-#                       password = '7vN2c8ghfAnT2g8g',
-#                       port=1433)
-        
-
-# query = "SELECT * FROM CRD_ACLED WHERE [CountryFK] = 3 AND [ACLED_Year] = 2021"
-# data = pd.read_sql(query, conn)
-# conflict = data.copy()
+df = df.filter((df.CountryFK==214) & (df.ACLED_Year=='2022')) 
 
 # COMMAND ----------
 
 #Set for identical results
 np.random.seed(2021)
 #Import Relevant Country Shapefile
-poly = gpd.read_file('adm3/lka_admbnda_adm3_slsd_20200305.shp')
+poly = gpd.read_file('adm2/SDN_adm2.shp')
 
 # COMMAND ----------
 
@@ -88,7 +74,7 @@ poly = gpd.read_file('adm3/lka_admbnda_adm3_slsd_20200305.shp')
 
 # conflict = conflict[(conflict['TimeFK_Event_Date'] > '20210801') & (conflict['TimeFK_Event_Date'] < '20211231')]
 
-conflict
+conflict = df.toPandas()
 
 # COMMAND ----------
 
@@ -99,10 +85,16 @@ crs = 'epsg:4326'
 #Build spatial data frame
 conflict_geo = GeoDataFrame(conflict, crs=crs, geometry=geometry)
 
+# COMMAND ----------
+
 #Create merged spatial data frame to confirm matching dimensions
-sj_gdf = gpd.sjoin(poly, conflict_geo, how='inner', op='intersects', lsuffix='left', rsuffix='right')
+sj_gdf = gpd.sjoin(poly, conflict_geo, how='inner', predicate='intersects', lsuffix='left', rsuffix='right')
 
 list(sj_gdf)
+
+# COMMAND ----------
+
+sj_gdf.head()
 
 # COMMAND ----------
 
@@ -110,15 +102,15 @@ list(sj_gdf)
 # Generrate counts variables
 #############
 #Fatalities
-Total_f_gdf = sj_gdf['ACLED_Fatalities'].groupby([sj_gdf['ADM3_EN']]).sum()
+Total_f_gdf = sj_gdf['ACLED_Fatalities'].groupby([sj_gdf['NAME_2']]).sum()
 
 #Total Events
-Total_e_gdf = sj_gdf['ADM3_EN'].groupby([sj_gdf['ADM3_EN']]).count()
+Total_e_gdf = sj_gdf['NAME_2'].groupby([sj_gdf['NAME_2']]).count()
 Total_e_gdf.rename('Event Count', inplace=True)
 
 ####Create event type df
 #protests
-prot = sj_gdf.loc[sj_gdf['ACLED_Event_Type'] == "Protests"].groupby(['ADM3_EN']).agg({'ACLED_Event_Type':'count'}).squeeze()
+prot = sj_gdf.loc[sj_gdf['ACLED_Event_Type'] == "Protests"].groupby(['NAME_2']).agg({'ACLED_Event_Type':'count'}).squeeze()
 prot.rename('Protest Count', inplace=True)
 
 
@@ -130,7 +122,7 @@ merged_df = pd.concat([Total_e_gdf, Total_f_gdf, prot],axis=1)
 # COMMAND ----------
 
 #Merge with geospatial dataframe
-fin_gdf = poly.join(merged_df, on='ADM3_EN')
+fin_gdf = poly.join(merged_df, on='NAME_2')
 #fin_gdf = fin_gdf.join(Total_e_gdf, on='NA')
 
 #Assumption here for ACLED is that if there is no event of that type in a polygon then none have happened
@@ -150,7 +142,7 @@ fin_gdf.fillna({'Protest Count':0, 'Event Count':0,
 
 # COMMAND ----------
 
-fin_gdf.ADM2_EN
+fin_gdf.NAME_2
 
 # COMMAND ----------
 
@@ -158,11 +150,11 @@ fin_gdf.ADM2_EN
 #Weights (Google Contiguity and Spatial Associaton for more info - also pysal's documentation and user example was used heavily for this script)
 ####
 #Queen contiguity
-wq = lps.weights.Queen.from_shapefile(filepath='adm3/lka_admbnda_adm3_slsd_20200305.shp')
+wq = lps.weights.Queen.from_shapefile(filepath='adm2/SDN_adm2.shp')
 # wq.transform = 'r'
 
 #KNN
-wk= lps.weights.KNN.from_shapefile(filepath='adm3/lka_admbnda_adm3_slsd_20200305.shp', k=5)
+wk= lps.weights.KNN.from_shapefile(filepath='adm2/SDN_adm2.shp', k=5)
 # wk.transform='r'
 
 # COMMAND ----------
@@ -230,3 +222,11 @@ ax.legend(handles=legend_elements, loc='upper right')
 ax.set_axis_off()
 #plt.title("Protest Hot and Cold Zones (ACLED 2020-2021)")
 plt.show()
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+
+
