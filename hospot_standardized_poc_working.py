@@ -57,10 +57,25 @@ df = df.filter((df.CountryFK==214) & (df.ACLED_Year=='2022'))
 
 # COMMAND ----------
 
+#admin 2, 2015, https://geodata.lib.berkeley.edu
+shp = {
+    'shape_file': 'adm2/SDN_adm2.shp',
+    'admin_col': 'NAME_2'
+}
+
+#admin 3, 2011, https://fews.net/fews-data
+shp = {
+    'shape_file': 'adm3/SD_Admin3_2011.shp',
+    'admin_col': 'ADMIN3'
+}
+
+
+# COMMAND ----------
+
 #Set for identical results
 np.random.seed(2021)
 #Import Relevant Country Shapefile
-poly = gpd.read_file('adm2/SDN_adm2.shp')
+poly = gpd.read_file(shp['shape_file'])
 
 # COMMAND ----------
 
@@ -90,10 +105,6 @@ conflict_geo = GeoDataFrame(conflict, crs=crs, geometry=geometry)
 #Create merged spatial data frame to confirm matching dimensions
 sj_gdf = gpd.sjoin(poly, conflict_geo, how='inner', predicate='intersects', lsuffix='left', rsuffix='right')
 
-list(sj_gdf)
-
-# COMMAND ----------
-
 sj_gdf.head()
 
 # COMMAND ----------
@@ -102,15 +113,15 @@ sj_gdf.head()
 # Generrate counts variables
 #############
 #Fatalities
-Total_f_gdf = sj_gdf['ACLED_Fatalities'].groupby([sj_gdf['NAME_2']]).sum()
+Total_f_gdf = sj_gdf['ACLED_Fatalities'].groupby([sj_gdf[shp['admin_col']]]).sum()
 
 #Total Events
-Total_e_gdf = sj_gdf['NAME_2'].groupby([sj_gdf['NAME_2']]).count()
+Total_e_gdf = sj_gdf[shp['admin_col']].groupby([sj_gdf[shp['admin_col']]]).count()
 Total_e_gdf.rename('Event Count', inplace=True)
 
 ####Create event type df
 #protests
-prot = sj_gdf.loc[sj_gdf['ACLED_Event_Type'] == "Protests"].groupby(['NAME_2']).agg({'ACLED_Event_Type':'count'}).squeeze()
+prot = sj_gdf.loc[sj_gdf['ACLED_Event_Type'] == "Protests"].groupby([shp['admin_col']]).agg({'ACLED_Event_Type':'count'}).squeeze()
 prot.rename('Protest Count', inplace=True)
 
 
@@ -122,7 +133,7 @@ merged_df = pd.concat([Total_e_gdf, Total_f_gdf, prot],axis=1)
 # COMMAND ----------
 
 #Merge with geospatial dataframe
-fin_gdf = poly.join(merged_df, on='NAME_2')
+fin_gdf = poly.join(merged_df, on=shp['admin_col'])
 #fin_gdf = fin_gdf.join(Total_e_gdf, on='NA')
 
 #Assumption here for ACLED is that if there is no event of that type in a polygon then none have happened
@@ -142,30 +153,22 @@ fin_gdf.fillna({'Protest Count':0, 'Event Count':0,
 
 # COMMAND ----------
 
-fin_gdf.NAME_2
-
-# COMMAND ----------
-
 ####
 #Weights (Google Contiguity and Spatial Associaton for more info - also pysal's documentation and user example was used heavily for this script)
 ####
 #Queen contiguity
-wq = lps.weights.Queen.from_shapefile(filepath='adm2/SDN_adm2.shp')
+wq = lps.weights.Queen.from_shapefile(filepath=shp['shape_file'])
 # wq.transform = 'r'
 
 #KNN
-wk= lps.weights.KNN.from_shapefile(filepath='adm2/SDN_adm2.shp', k=5)
+wk= lps.weights.KNN.from_shapefile(filepath=shp['shape_file'], k=5)
 # wk.transform='r'
-
-# COMMAND ----------
-
-fin_gdf.tail()
 
 # COMMAND ----------
 
 #Set varlist
 # continued
-varlist = ['Protest Count', 'Event Count']
+varlist = ['Event Count', 'ACLED_Fatalities', 'Protest Count']
 
 #invalid value in battles var - check acled data source - UPDATE solved - due to no battles happenng 2020 it's just a divide by zero - results for 2020 null
 #Calculate G* z-scores
@@ -174,10 +177,20 @@ for var in varlist:
     print(var)
     #df = fin_gdf.copy()
     #df[var].dropna(inplace=True)
-    # G = G_Local(fin_gdf[var], wq, star=True, permutations=999)
-    G = G_Local(fin_gdf['Event Count'], wk, transform='r', permutations=999)
+    G = G_Local(fin_gdf[var], wq, star=True, permutations=999)
+    # G = G_Local(fin_gdf['Event Count'], wk, transform='r', permutations=999)
     fin_gdf[var+'_Gzs'] = G.Zs
     fin_gdf[var+'_Gpsim'] = G.p_sim
+
+# COMMAND ----------
+
+fin_gdf.tail()
+
+# COMMAND ----------
+
+var = 'Event Count'
+var_gpsim = f'{var}_Gpsim'
+var_gzs = f'{var}_Gzs'
 
 # COMMAND ----------
 
@@ -192,9 +205,9 @@ from matplotlib import cm
 ## Genearte maps in map directory
 df = fin_gdf.copy()
 conditions = [
-    (df['Event Count_Gpsim'] < 0.10) & (df['Event Count_Gzs'] > 0),
-    (df['Event Count_Gpsim'] < 0.10) & (df['Event Count_Gzs'] < 0),
-    (df['Event Count_Gpsim'] > 0.10)
+    (df[var_gpsim] < 0.10) & (df[var_gzs] > 0),
+    (df[var_gpsim] < 0.10) & (df[var_gzs] < 0),
+    (df[var_gpsim] > 0.10)
      ]
 
 #Can ignore this - is just for visualizing with ggplot/python but I am sure there's a better way to do it with tableau
@@ -222,10 +235,6 @@ ax.legend(handles=legend_elements, loc='upper right')
 ax.set_axis_off()
 #plt.title("Protest Hot and Cold Zones (ACLED 2020-2021)")
 plt.show()
-
-# COMMAND ----------
-
-
 
 # COMMAND ----------
 
