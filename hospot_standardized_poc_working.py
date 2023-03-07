@@ -1,6 +1,7 @@
 # Databricks notebook source
 !pip install pysal
 !pip install descartes
+!pip install openpyxl
 
 # COMMAND ----------
 
@@ -21,6 +22,10 @@ from shapely.geometry import Point
 # import openpyxl
 from esda.getisord import G_Local
 import datetime as dt
+
+# COMMAND ----------
+
+df = pd.read_excel('/dbfs/FileStore/df/undss/sahel_incident_data.xlsx')
 
 # COMMAND ----------
 
