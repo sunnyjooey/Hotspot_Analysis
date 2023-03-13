@@ -1,7 +1,6 @@
 # Databricks notebook source
 !pip install pysal
 !pip install descartes
-!pip install openpyxl
 
 # COMMAND ----------
 
@@ -25,10 +24,6 @@ import datetime as dt
 
 # COMMAND ----------
 
-df = pd.read_excel('/dbfs/FileStore/df/undss/sahel_incident_data.xlsx')
-
-# COMMAND ----------
-
 # MAGIC %sh
 # MAGIC curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
 # MAGIC curl https://packages.microsoft.com/config/ubuntu/16.04/prod.list > /etc/apt/sources.list.d/mssql-release.list
@@ -38,48 +33,118 @@ df = pd.read_excel('/dbfs/FileStore/df/undss/sahel_incident_data.xlsx')
 
 # COMMAND ----------
 
-from keys import keys
-
-database_host = keys["database_host"]
-database_port = keys["database_port"]
-database_name = keys["database_name"]
-user = keys["user"]
-password = keys["password"]
-
-table = "dbo.CRD_ACLED"
-url = f"jdbc:sqlserver://{database_host}:{database_port};databaseName={database_name};"
-
-df = (spark.read
-  .format("com.microsoft.sqlserver.jdbc.spark")
-  .option("url", url)
-  .option("dbtable", table)
-  .option("user", user)
-  .option("password", password)
-  .load()
-)
-
-df = df.filter(df.CountryFK==214) 
+!pip install openpyxl
+import pandas as pd
 
 # COMMAND ----------
 
-#admin 2, 2015, https://geodata.lib.berkeley.edu
-# shp = {
-#     'shape_file': 'adm2/SDN_adm2.shp',
-#     'admin_col': 'NAME_2'
-# }
+df = pd.read_excel('/dbfs/FileStore/df/undss/sahel_incident_data.xlsx')
+df = df[df['Country']=='NIGER']
 
-#admin 3, 2011, https://fews.net/fews-data
-shp = {
-    'shape_file': 'adm3/SD_Admin3_2011.shp',
-    'admin_col': 'ADMIN3'
-}
+# COMMAND ----------
 
 #Import Relevant Country Shapefile
-poly = gpd.read_file(shp['shape_file'])
+poly = gpd.read_file('./niger/admin1/NER_adm01_feb2018.shp')
 
 # COMMAND ----------
 
-ds = df.toPandas()
+d = {'agadez': 'Agadez',
+      'zinder': 'Zinder',
+      'maradi': 'Maradi',
+      'Tllaberi':'Tillabéri',
+      'Tillabery':'Tillabéri',
+       '0': 'drop'}
+
+# COMMAND ----------
+
+a = HotSpot(df, poly, 'Admin1', 'adm_01')
+
+# COMMAND ----------
+
+a.correct_df_admin(d)
+
+# COMMAND ----------
+
+a.get_spots_admin('Date', dt.datetime(2020,1,1), dt.datetime(2023,2,1), 'sum', {'IED':None})
+
+# COMMAND ----------
+
+class HotSpot:
+    def __init__(self, df, gdf, df_admin_col, gdf_admin_col):
+        self.df = df
+        if isinstance(gdf, gpd.geodataframe.GeoDataFrame):
+            self.gdf = gdf
+            #Queen contiguity
+            self.wq = lps.weights.Queen.from_dataframe(gdf, 'geometry')
+            #KNN
+            self.wk= lps.weights.KNN.from_dataframe(gdf, 'geometry', k=5)
+            
+        self.df_admin_col = df_admin_col
+        self.gdf_admin_col = gdf_admin_col
+        self.wq = None
+        self.wk = None
+        self.fin_gdf = None
+    
+    def _check_admin(self):
+        df_admin_vals = self.df[self.df_admin_col].unique()
+        gdf_admin_vals = self.gdf[self.gdf_admin_col].unique()
+        bad_vals = [x for x in df_admin_vals if x not in gdf_admin_vals]
+        return bad_vals
+    
+    def correct_df_admin(self, adjust_dict):
+        df = self.df
+        df[self.df_admin_col] = df[self.df_admin_col].apply(lambda x: adjust_dict[x] if x in adjust_dict.keys() else x)
+        df = df[(df[self.df_admin_col] != 'drop') & (~df[self.df_admin_col].isnull())]
+        self.df = df
+        
+    def get_spots_admin(self, date_col, start_date, end_date, df_analysis, df_col_dict, seed=8888):
+        bad_vals = self._check_admin()
+        if len(bad_vals) > 0:
+            raise Exception(f"These admin values in the data are NOT in the geopandas data: {', '.join(bad_vals)}")
+        else:
+            self.df[date_col] = pd.to_datetime(self.df[date_col])
+            conflict = self.df[(self.df[date_col] >= start_date) & (self.df[date_col] <= end_date)]
+            
+            #############
+            # Generrate counts variables
+            #############
+            col = next(iter(df_col_dict))
+            val = df_col_dict[col]
+            if val is not None:
+                conflict = conflict.loc[conflict[col] == val]
+                
+            if df_analysis == 'sum':
+                analysis_df = conflict.groupby([self.df_admin_col]).agg({col:'sum'}).reset_index()
+            else:
+                analysis_df = conflict[[self.df_admin_col, col]].groupby([self.df_admin_col]).count().reset_index()
+            analysis_df.rename(columns={col:'analysis_col'}, inplace=True)
+
+            #Create merged spatial data frame to confirm matching dimensions
+            fin_gdf = pd.merge(self.gdf, analysis_df, how='left', left_on=self.gdf_admin_col, right_on=self.df_admin_col)
+            fin_gdf.fillna({'analysis_col': 0}, inplace=True)
+            fin_gdf['analysis_col'] = fin_gdf['analysis_col'].astype(np.float64)
+            
+            #Set for identical results
+            np.random.seed(seed)
+
+            G = G_Local(fin_gdf['analysis_col'], wq, star=True, permutations=999)
+            # G = G_Local(fin_gdf['Event Count'], wk, transform='r', permutations=999)
+            fin_gdf['_Gzs'] = G.Zs
+            fin_gdf['_Gpsim'] = G.p_sim
+            self.fin_gdf = fin_gdf
+
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+
+
 
 # COMMAND ----------
 
