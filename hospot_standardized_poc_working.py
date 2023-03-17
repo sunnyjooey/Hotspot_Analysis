@@ -1,26 +1,22 @@
 # Databricks notebook source
 !pip install pysal
 !pip install descartes
+!pip install openpyxl
 
 # COMMAND ----------
 
 # Databricks notebook source
 import pandas as pd
 import numpy as np
-import time
-from itertools import count
-import pysal
-import esda
-import geopandas as gpd
-from geopandas import GeoDataFrame
-import libpysal as lps
-# import matplotlib.pyplot as plt
-# from pysal.mapclassify import K
-# from seaborn.palettes import color_palette
-from shapely.geometry import Point
-# import openpyxl
-from esda.getisord import G_Local
 import datetime as dt
+import pysal
+import geopandas as gpd
+import libpysal as lps
+from esda.getisord import G_Local
+
+import matplotlib.pyplot as plt
+from matplotlib import colors
+from matplotlib.lines import Line2D
 
 # COMMAND ----------
 
@@ -33,39 +29,11 @@ import datetime as dt
 
 # COMMAND ----------
 
-!pip install openpyxl
-import pandas as pd
-
-# COMMAND ----------
-
+# read in data
 df = pd.read_excel('/dbfs/FileStore/df/undss/sahel_incident_data.xlsx')
 df = df[df['Country']=='NIGER']
 
-# COMMAND ----------
-
-#Import Relevant Country Shapefile
 poly = gpd.read_file('./niger/admin1/NER_adm01_feb2018.shp')
-
-# COMMAND ----------
-
-d = {'agadez': 'Agadez',
-      'zinder': 'Zinder',
-      'maradi': 'Maradi',
-      'Tllaberi':'Tillabéri',
-      'Tillabery':'Tillabéri',
-       '0': 'drop'}
-
-# COMMAND ----------
-
-a = HotSpot(df, poly, 'Admin1', 'adm_01')
-
-# COMMAND ----------
-
-a.correct_df_admin(d)
-
-# COMMAND ----------
-
-a.get_spots_admin('Date', dt.datetime(2020,1,1), dt.datetime(2023,2,1), 'sum', {'IED':None})
 
 # COMMAND ----------
 
@@ -73,17 +41,9 @@ class HotSpot:
     def __init__(self, df, gdf, df_admin_col, gdf_admin_col):
         self.df = df
         if isinstance(gdf, gpd.geodataframe.GeoDataFrame):
-            self.gdf = gdf
-            #Queen contiguity
-            self.wq = lps.weights.Queen.from_dataframe(gdf, 'geometry')
-            #KNN
-            self.wk= lps.weights.KNN.from_dataframe(gdf, 'geometry', k=5)
-            
+            self.gdf = gdf            
         self.df_admin_col = df_admin_col
         self.gdf_admin_col = gdf_admin_col
-        self.wq = None
-        self.wk = None
-        self.fin_gdf = None
     
     def _check_admin(self):
         df_admin_vals = self.df[self.df_admin_col].unique()
@@ -97,201 +57,145 @@ class HotSpot:
         df = df[(df[self.df_admin_col] != 'drop') & (~df[self.df_admin_col].isnull())]
         self.df = df
         
-    def get_spots_admin(self, date_col, start_date, end_date, df_analysis, df_col_dict, seed=8888):
+    def get_spots_admin(
+                        self, 
+                        df_col, 
+                        sum_count, 
+                        weight, 
+                        weight_kwargs={}, 
+                        glocal_kwargs={'star':True}, 
+                        date_filter={}, 
+                        seed=8888
+                        ):
+        
+        # check to see that all admin levels are in the shapefile
         bad_vals = self._check_admin()
         if len(bad_vals) > 0:
             raise Exception(f"These admin values in the data are NOT in the geopandas data: {', '.join(bad_vals)}")
         else:
-            self.df[date_col] = pd.to_datetime(self.df[date_col])
-            conflict = self.df[(self.df[date_col] >= start_date) & (self.df[date_col] <= end_date)]
-            
-            #############
-            # Generrate counts variables
-            #############
-            col = next(iter(df_col_dict))
-            val = df_col_dict[col]
-            if val is not None:
-                conflict = conflict.loc[conflict[col] == val]
-                
-            if df_analysis == 'sum':
-                analysis_df = conflict.groupby([self.df_admin_col]).agg({col:'sum'}).reset_index()
+            if len(date_filter) != 0:
+                # filter to subset of data by date
+                df = self.df
+                df.loc[:, date_filter['date_col']] = pd.to_datetime(df[date_filter['date_col']])
+                df = df.loc[(df[date_filter['date_col']] >= date_filter['start_date']) & (df[date_filter['date_col']] <= date_filter['end_date']), :]
             else:
-                analysis_df = conflict[[self.df_admin_col, col]].groupby([self.df_admin_col]).count().reset_index()
-            analysis_df.rename(columns={col:'analysis_col'}, inplace=True)
-
-            #Create merged spatial data frame to confirm matching dimensions
-            fin_gdf = pd.merge(self.gdf, analysis_df, how='left', left_on=self.gdf_admin_col, right_on=self.df_admin_col)
-            fin_gdf.fillna({'analysis_col': 0}, inplace=True)
-            fin_gdf['analysis_col'] = fin_gdf['analysis_col'].astype(np.float64)
+                df = self.df
             
-            #Set for identical results
+            # filter to subset of data by column value
+            col = next(iter(df_col))
+            val = df_col[col]
+            if val is not None:
+                df = df.loc[df[col] == val, :]
+            
+            # sum (like fatalities) or count (where each row is an event) 
+            if sum_count == 'sum':
+                analysis_df = df.groupby([self.df_admin_col]).agg({col:'sum'}).reset_index()
+            elif sum_count == 'count':
+                analysis_df = df[[self.df_admin_col, col]].groupby([self.df_admin_col]).count().reset_index()
+            else:
+                raise Exception("sum_count must be 'sum' or 'count'")
+            analysis_col = f'{col}_{sum_count}'
+            analysis_df.rename(columns={col:analysis_col}, inplace=True)
+            
+            # merge with geo dataframe
+            fin_gdf = pd.merge(self.gdf[[self.gdf_admin_col]], analysis_df, how='left', left_on=self.gdf_admin_col, right_on=self.df_admin_col)
+            fin_gdf.fillna({analysis_col: 0}, inplace=True)
+            fin_gdf[analysis_col] = fin_gdf[analysis_col].astype(np.float64)
+            fin_gdf = fin_gdf.drop(self.gdf_admin_col, axis=1)
+            
+            # weights
+            wkwargs = {'df': self.gdf, **weight_kwargs}
+            if weight == 'q':
+                wt = lps.weights.Queen.from_dataframe(**wkwargs)
+            elif weight == 'k':
+                wt = lps.weights.KNN.from_dataframe(**wkwargs)
+            else:
+                raise Exception("weight must be 'q' for Queen or 'k' for KNN")
+            
+            gkwargs = {'y': fin_gdf[analysis_col], 'w': wt, **glocal_kwargs}
+            # set for identical results
             np.random.seed(seed)
+            G = G_Local(**gkwargs)
+            fin_gdf['Gzs'] = G.Zs
+            fin_gdf['Gpsim'] = G.p_sim
+            
+            # save params
+            params = {'sum_count':sum_count, 'weight':weight}
+            params.update({**df_col, **weight_kwargs, **glocal_kwargs, **date_filter})
+            fin_gdf['params'] = [params] * fin_gdf.shape[0]
+            
+            return fin_gdf
 
-            G = G_Local(fin_gdf['analysis_col'], wq, star=True, permutations=999)
-            # G = G_Local(fin_gdf['Event Count'], wk, transform='r', permutations=999)
-            fin_gdf['_Gzs'] = G.Zs
-            fin_gdf['_Gpsim'] = G.p_sim
-            self.fin_gdf = fin_gdf
-
-
-# COMMAND ----------
-
-
-
-# COMMAND ----------
-
-
-
-# COMMAND ----------
-
-
-
-# COMMAND ----------
-
-# Filt data  if of interest
-def convert_dt(value):
-    valstr = str(value)
-    date_clean = dt.datetime(year=int(valstr[0:4]), month=int(valstr[4:6]), day=int(valstr[6:8]))
-    return date_clean
-
-ds['TimeFK_Event_Date'] = ds['TimeFK_Event_Date'].apply(lambda x: convert_dt(x))
-
-# COMMAND ----------
-
-months = [(dt.datetime(2021,12,1), dt.datetime(2022,2,28)), 
-         (dt.datetime(2022,3,1), dt.datetime(2022,5,31)), 
-         (dt.datetime(2022,6,1), dt.datetime(2022,8,31)), 
-         (dt.datetime(2022,9,1), dt.datetime(2022,11,30))]
-
-for m in months:
-    conflict = ds[(ds['TimeFK_Event_Date'] >= m[0]) & (ds['TimeFK_Event_Date'] <= m[1])]
-    print(conflict.shape)
-    
-    #Define geometry of events data
-    geometry = [Point(xy)  for xy in zip(conflict['ACLED_Longitude'], conflict['ACLED_Latitude'])]
-    crs = 'epsg:4326'
-
-    #Build spatial data frame
-    conflict_geo = GeoDataFrame(conflict, crs=crs, geometry=geometry)
-
-    #Create merged spatial data frame to confirm matching dimensions
-    sj_gdf = gpd.sjoin(poly, conflict_geo, how='inner', predicate='intersects', lsuffix='left', rsuffix='right')
-
-    #############
-    # Generrate counts variables
-    #############
-    #Fatalities
-    Total_f_gdf = sj_gdf['ACLED_Fatalities'].groupby([sj_gdf[shp['admin_col']]]).sum()
-
-    #Total Events
-    Total_e_gdf = sj_gdf[shp['admin_col']].groupby([sj_gdf[shp['admin_col']]]).count()
-    Total_e_gdf.rename('Event_Count', inplace=True)
-
-    ####Create event type df
-    #protests
-    prot = sj_gdf.loc[sj_gdf['ACLED_Event_Type'] == "Protests"].groupby([shp['admin_col']]).agg({'ACLED_Event_Type':'count'}).squeeze()
-    prot.rename('Protest_Count', inplace=True)
-
-
-    #######Actor Type - Did not do this yet (mainly as ACLED['Actor_Type'].value_counts() in the sri lanka case was not promising) - maybe look into interaction
-
-    ####Concatenate dataframes
-    merged_df = pd.concat([Total_e_gdf, Total_f_gdf, prot],axis=1)
-    
-    #Merge with geospatial dataframe
-    fin_gdf = poly.join(merged_df, on=shp['admin_col'])
-    #fin_gdf = fin_gdf.join(Total_e_gdf, on='NA')
-
-    #Assumption here for ACLED is that if there is no event of that type in a polygon then none have happened
-    # fin_gdf.fillna({'Protest Count':0, 'Riot Count':0, 'VOC Count':0, 'StratDev Count':0, 
-    #                 'Explosive/Remote Violence Count':0, 'Battles Count':0, 'Event Count':0, 
-    #                 'ACLED_Fatalities':0}, inplace=True)
-
-    fin_gdf.fillna({'Protest_Count':0, 'Event_Count':0, 
-                    'ACLED_Fatalities':0}, inplace=True)
-
-    #Alternatively could fill nas by means (doesn't make sense to me) - have to do this for spatial z-score calculation to work as nans throw the calculation
-    # fin_gdf.fillna({'Protest Count':fin_gdf['Protest Count'].mean(), 'Riot Count':fin_gdf['Riot Count'].mean(), 'VOC Count':fin_gdf['Protest Count'].mean(), 'StratDev Count':fin_gdf['Protest Count'].mean(), 
-    #                 'Explosive/Remote Violence Count':fin_gdf['Protest Count'].mean(), 'Battles Count':fin_gdf['Protest Count'].mean(), 'Event Count':fin_gdf['Protest Count'].mean(), 
-    #                 'ACLED_Fatalities':fin_gdf['Protest Count'].mean()}, inplace=True)
-    
-    #Set for identical results
-    np.random.seed(2021)
-
-    ####
-    #Weights (Google Contiguity and Spatial Associaton for more info - also pysal's documentation and user example was used heavily for this script)
-    ####
-    #Queen contiguity
-    wq = lps.weights.Queen.from_shapefile(filepath=shp['shape_file'])
-    # wq.transform = 'r'
-
-    #KNN
-    wk= lps.weights.KNN.from_shapefile(filepath=shp['shape_file'], k=5)
-    # wk.transform='r'
-    
-    #Set varlist
-    # continued
-    varlist = ['Event_Count', 'ACLED_Fatalities', 'Protest_Count']
-
-    #invalid value in battles var - check acled data source - UPDATE solved - due to no battles happenng 2020 it's just a divide by zero - results for 2020 null
-    #Calculate G* z-scores
-    #For contigutiy (queen wieghts) set transform parameter to 'R' (source: Arcgis documentation)
-    for var in varlist:
-        print(var)
-        #Set for identical results
-        np.random.seed(2021)
-        #df = fin_gdf.copy()
-        #df[var].dropna(inplace=True)
-        G = G_Local(fin_gdf[var], wq, star=True, permutations=999)
-        # G = G_Local(fin_gdf['Event Count'], wk, transform='r', permutations=999)
-        fin_gdf[var+'_Gzs'] = G.Zs
-        fin_gdf[var+'_Gpsim'] = G.p_sim
         
-        var_gpsim = f'{var}_Gpsim'
-        var_gzs = f'{var}_Gzs'
+    def get_spots_admin_map(
+                              self, 
+                              df_col, 
+                              sum_count, 
+                              weight, 
+                              weight_kwargs={}, 
+                              glocal_kwargs={'star':True}, 
+                              date_filter={}, 
+                              seed=8888,
+                              tresh={'gpsim':0.10, 'gzs':0}
+                              ):
         
-        #viz - in case one wants to check results / or play with confidence levels before deploying
-        import matplotlib.pyplot as plt
-        from descartes import PolygonPatch
-        BLUE = '#6699cc'
-        from matplotlib.lines import Line2D
-        from matplotlib.patches import Patch
-        from matplotlib import cm
-        #Viz results - #G_psim is the pvalue threshold (e.g. .10 = 90% confidence interval)
-        ## Genearte maps in map directory
-        df = fin_gdf.copy()
+        # fit
+        fin_gdf = self.get_spots_admin(df_col, sum_count, weight, weight_kwargs, glocal_kwargs, date_filter, seed)
+        # merge in geo data
+        fin_gdf = pd.merge(self.gdf, fin_gdf, how='left', left_on=self.gdf_admin_col, right_on=self.df_admin_col)
+        
         conditions = [
-            (df[var_gpsim] < 0.10) & (df[var_gzs] > 0),
-            (df[var_gpsim] < 0.10) & (df[var_gzs] < 0),
-            (df[var_gpsim] > 0.10)
+                (fin_gdf['Gpsim'] < tresh['gpsim']) & (fin_gdf['Gzs'] > tresh['gzs']),
+                (fin_gdf['Gpsim'] < tresh['gpsim']) & (fin_gdf['Gzs'] < tresh['gzs']),
+                (fin_gdf['Gpsim'] > tresh['gpsim'])
              ]
-
-        #Can ignore this - is just for visualizing with ggplot/python but I am sure there's a better way to do it with tableau
-        #Essentially created dummy variables based on significance level to then visualize
-        choices = [1,2,0]
-
-        df['viz'] = np.select(conditions, choices)
-
-        legend_elements = [   Line2D([0], [0], marker='o', color='w', label='Cold',
+        choices = [1, 2, 0]
+        fin_gdf['viz'] = np.select(conditions, choices)
+        legend_elements = [Line2D([0], [0], marker='o', color='w', label='Cold',
                                   markerfacecolor='Blue', markersize=10),
                            Line2D([0], [0], marker='o', color='w', label='Hot',
                                   markerfacecolor='Red', markersize=10),
-                            Line2D([0], [0], marker='o', color='w', label='Not significant',
+                           Line2D([0], [0], marker='o', color='w', label='Not significant',
                                   markerfacecolor='Grey', markersize=10)]
 
-
-        #Static map here
-        from matplotlib import colors
-        hmap = colors.ListedColormap([ 'lightgrey', 'red', 'blue'])
+        # Static map
+        hmap = colors.ListedColormap(['lightgrey', 'red', 'blue'])
         f, ax = plt.subplots(1, figsize=(9, 9))
-        df.assign(cl=df['viz']).plot(column='cl', categorical=True, \
-                k=2, cmap=hmap, linewidth=0.1, ax=ax, \
-                edgecolor='white')
+        fin_gdf.assign(cl=fin_gdf['viz']).plot(column='cl', categorical=True, k=2, cmap=hmap, linewidth=0.1, ax=ax, edgecolor='white')
         ax.legend(handles=legend_elements, loc='upper right')        
         ax.set_axis_off()
-        #plt.title("Protest Hot and Cold Zones (ACLED 2020-2021)")
-        plt.savefig(f'/dbfs/FileStore/df/misc/sudan_{m[0].year}_{m[0].month}_{var}.png')
+        ax.set_title('boo')
+        #plt.savefig(f'/dbfs/FileStore/df/misc/sudan_{m[0].year}_{m[0].month}_{var}.png')
         plt.show()
+        
+
+# COMMAND ----------
+
+admin1_map = {'agadez': 'Agadez',
+      'zinder': 'Zinder',
+      'maradi': 'Maradi',
+      'Tllaberi':'Tillabéri',
+      'Tillabery':'Tillabéri',
+      '0': 'drop'}
+
+date_dict = {'date_col':'Date', 'start_date': dt.datetime(2020,1,1), 'end_date':dt.datetime(2023,2,1)}
+
+# instantiate
+hs = HotSpot(df, poly, 'Admin1', 'adm_01')
+# correct admin 1 names
+hs.correct_df_admin(admin1_map)
+
+# COMMAND ----------
+
+hs_df.iloc[0,-1]
+
+# COMMAND ----------
+
+hs_df = hs.get_spots_admin({'IED':None}, 'sum', 'q', date_filter=date_dict)
+
+# COMMAND ----------
+
+hs.get_spots_admin_map({'IED':None}, 'sum', 'q', date_filter=date_dict)
 
 # COMMAND ----------
 
