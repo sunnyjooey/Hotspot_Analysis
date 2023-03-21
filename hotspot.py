@@ -45,7 +45,6 @@ class HotSpot:
         # filter to subset of data by date
         if len(date_filter) != 0:
             df = self.df
-            df.loc[:, date_filter['date_col']] = pd.to_datetime(df[date_filter['date_col']])
             df = df.loc[(df[date_filter['date_col']] >= date_filter['start_date']) & (df[date_filter['date_col']] <= date_filter['end_date']), :]
         else:
             df = self.df

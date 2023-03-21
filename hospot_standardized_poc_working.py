@@ -58,7 +58,10 @@ poly = gpd.read_file('./niger/admin1/NER_adm01_feb2018.shp')
 
 # COMMAND ----------
 
-date_dict = {'date_col':'Date', 'start_date': dt.datetime(2020,1,1), 'end_date':dt.datetime(2023,2,1)}
+# dict of date filter
+date_filter = {'date_col':'Date', 'start_date': dt.datetime(2020,1,1), 'end_date':dt.datetime(2023,2,1)}
+# change date column to datetime
+df2.loc[:, date_filter['date_col']] = pd.to_datetime(df2[date_filter['date_col']])
 
 # instantiate
 hs = HotSpot(poly, df2, 'adm_01', 'Admin1')
@@ -66,7 +69,7 @@ hs = HotSpot(poly, df2, 'adm_01', 'Admin1')
 # COMMAND ----------
 
 # will not work
-hs_df = hs.get_spots_df({'df_col':'IED'}, 'sum', 'q', date_filter=date_dict)
+hs_df = hs.get_spots_df({'df_col':'IED'}, 'sum', 'q', date_filter=date_filter)
 
 # COMMAND ----------
 
@@ -83,12 +86,22 @@ hs.correct_df_admin(admin1_map)
 # COMMAND ----------
 
 # now will work
-hs_df = hs.get_spots_df({'df_col':'IED'}, 'sum', 'q', date_filter=date_dict)
+hs_df = hs.get_spots_df({'df_col':'IED'}, 'sum', 'q', date_filter=date_filter)
 hs_df
 
 # COMMAND ----------
 
-hs.get_spots_map({'df_col':'IED'}, 'sum', 'q', date_filter=date_dict)
+hs.get_spots_map({'df_col':'IED'}, 'sum', 'q', date_filter=date_filter)
+
+# COMMAND ----------
+
+# Convert ACLED Dates to pd
+def convert_dt(value):
+    valstr = str(value)
+    date_clean = dt.datetime(year=int(valstr[0:4]), month=int(valstr[4:6]), day=int(valstr[6:8]))
+    return date_clean
+
+df1.loc[:, 'TimeFK_Event_Date'] = df1['TimeFK_Event_Date'].apply(lambda x: convert_dt(x))
 
 # COMMAND ----------
 
