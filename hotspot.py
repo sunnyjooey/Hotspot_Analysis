@@ -23,6 +23,7 @@ class HotSpot:
         self.df_admin_col = df_admin_col
         self.df_lat_col = df_lat_col
         self.df_lon_col = df_lon_col
+        self.processed_df = None
     
     def _check_admin(self):
         df_admin_vals = self.df[self.df_admin_col].unique()
@@ -36,73 +37,83 @@ class HotSpot:
         df = df[(df[self.df_admin_col] != 'drop') & (~df[self.df_admin_col].isnull())]
         self.df = df
     
-    def _filter_df(self, df_col_dict, date_filter, admin):
-        # if going by admin column, check to see that all admin levels are in the shapefile
-        if admin:
-            bad_vals = self._check_admin()
-            if len(bad_vals) > 0:
-                raise Exception(f"These admin values in the data are NOT in the geopandas data: {', '.join(bad_vals)}")
+    def process_df(self, df_col_dict, sum_count, date_filter={}, geo='admin'):
+        ##### check
+        # check that we have admin column or lat/lon columns
+        if geo == 'admin':
+            if self.df_admin_col is None:
+                raise Exception("You must provide 'df_admin_col'")
+            else:
+                bad_vals = self._check_admin()
+                if len(bad_vals) > 0:
+                    raise Exception(f"These admin values in the data are NOT in the geopandas data: {', '.join(bad_vals)}")
+        elif geo == 'coord':
+            if (self.df_lat_col is None) or (self.df_lon_col is None):
+                raise Exception("You must provide both 'df_lat_col' and 'df_lon_col'")
+        else:
+            raise Exception("'geo' can be 'admin' or 'coord'")
+            
+        ##### filter
         # filter to subset of data by date
         if len(date_filter) != 0:
             df = self.df
             df = df.loc[(df[date_filter['date_col']] >= date_filter['start_date']) & (df[date_filter['date_col']] <= date_filter['end_date']), :]
         else:
             df = self.df
+            
         # filter to subset of data by column value
+        col = df_col_dict['df_col']
         if 'col_val' in df_col_dict.keys():
-            df = df.loc[df[df_col_dict['df_col']] == df_col_dict['col_val'], :]
-        return df
+            df = df.loc[df[col] == df_col_dict['col_val'], :]      
+        
+        ##### if going by lat/lon columns
+        if geo == 'coord':
+            # Define geometry of events data
+            geometry = [Point(xy)  for xy in zip(df[self.df_lon_col], df[self.df_lat_col])]
+            # Build spatial data frame
+            df = gpd.GeoDataFrame(df, crs=self.gdf.crs, geometry=geometry)
+            # Create merged spatial data frame to confirm matching dimensions
+            df = gpd.sjoin(self.gdf, df, how='inner', predicate='intersects', lsuffix='left', rsuffix='right')
+            df = df[[self.gdf_admin_col, col]]
+        else:
+            # this is to make uniform column names
+            df.rename(columns={self.df_admin_col: self.gdf_admin_col}, inplace=True)
+
+        ##### sum/count: sum (like fatalities) or count (where each row is an event) 
+        if sum_count == 'sum':
+            analysis_df = df.groupby([self.gdf_admin_col]).agg({col:'sum'}).reset_index()
+        elif sum_count == 'count':
+            analysis_df = df[[self.gdf_admin_col, col]].groupby([self.gdf_admin_col]).count().reset_index()
+        else:
+            raise Exception("sum_count must be 'sum' or 'count'")
+        analysis_df.rename(columns={col:'num'}, inplace=True)
+        
+        ##### save
+        df_col_dict.update({'sum_count': sum_count})
+        df_col_dict.update(date_filter)
+        df_col_dict.pop('date_col', None)
+        analysis_df['filter'] = [df_col_dict] * analysis_df.shape[0]
+        
+        ##### set attribute
+        self.processed_df = analysis_df
         
         
     def get_spots_df(
             self, 
-            df_col_dict, 
-            sum_count, 
             weight, 
             weight_kwargs={}, 
             glocal_kwargs={'star':True}, 
-            date_filter={}, 
             seed=8888):
 
-            # check that we have admin column or lat/lon columns
-            if (self.df_admin_col is None) and (self.df_lat_col is None) and (self.df_lon_col is None):
-                raise Exception("You must provide 'df_admin_col' or 'df_lat_col' and 'df_lon_col'.")
-            
-            # process df 
-            col = df_col_dict['df_col']
-            analysis_col = f'{col}_{sum_count}'
-            # going by admin column
-            if self.df_lat_col is None:
-                # filter df to col val and date
-                df = self._filter_df(df_col_dict, date_filter, admin=True)
-                # this is to make uniform column names
-                df.rename(columns={self.df_admin_col: self.gdf_admin_col}, inplace=True)
-                
-            # going by lat/lon columns     
-            else: 
-                # filter df
-                df = self._filter_df(df_col_dict, date_filter, admin=False)
-                # Define geometry of events data
-                geometry = [Point(xy)  for xy in zip(df[self.df_lon_col], df[self.df_lat_col])]
-                # Build spatial data frame
-                df = gpd.GeoDataFrame(df, crs=self.gdf.crs, geometry=geometry)
-                # Create merged spatial data frame to confirm matching dimensions
-                df = gpd.sjoin(self.gdf, df, how='inner', predicate='intersects', lsuffix='left', rsuffix='right')
-                df = df[[self.gdf_admin_col, col]]
-                
-            # sum (like fatalities) or count (where each row is an event) 
-            if sum_count == 'sum':
-                analysis_df = df.groupby([self.gdf_admin_col]).agg({col:'sum'}).reset_index()
-            elif sum_count == 'count':
-                analysis_df = df[[self.gdf_admin_col, col]].groupby([self.gdf_admin_col]).count().reset_index()
+            if self.processed_df is None:
+                raise Exception("'process_df' first!")
             else:
-                raise Exception("sum_count must be 'sum' or 'count'")
-            analysis_df.rename(columns={col:analysis_col}, inplace=True)
+                analysis_df = self.processed_df
                 
             # merge with geo dataframe
             fin_gdf = pd.merge(self.gdf[[self.gdf_admin_col]], analysis_df, how='left', left_on=self.gdf_admin_col, right_on=self.gdf_admin_col)
-            fin_gdf.fillna({analysis_col: 0}, inplace=True)
-            fin_gdf[analysis_col] = fin_gdf[analysis_col].astype(np.float64)
+            fin_gdf.fillna({'num': 0}, inplace=True)
+            fin_gdf['num'] = fin_gdf['num'].astype(np.float64)
             
             # weights
             wkwargs = {'df': self.gdf, **weight_kwargs}
@@ -113,34 +124,31 @@ class HotSpot:
             else:
                 raise Exception("weight must be 'q' for Queen or 'k' for KNN")
             
-            gkwargs = {'y': fin_gdf[analysis_col], 'w': wt, **glocal_kwargs}
+            # fit
+            gkwargs = {'y': fin_gdf['num'], 'w': wt, **glocal_kwargs}
             # set for identical results
             np.random.seed(seed)
             G = G_Local(**gkwargs)
             fin_gdf['Gzs'] = G.Zs
             fin_gdf['Gpsim'] = G.p_sim
-            
+ 
             # save params
-            params = {'sum_count':sum_count, 'weight':weight}
-            params.update({**df_col_dict, **weight_kwargs, **glocal_kwargs, **date_filter})
+            params = {'weight':weight}
+            params.update({**weight_kwargs, **glocal_kwargs})
             fin_gdf['params'] = [params] * fin_gdf.shape[0]
-            
             return fin_gdf
 
         
     def get_spots_map(
             self, 
-            df_col_dict, 
-            sum_count, 
             weight, 
             weight_kwargs={}, 
             glocal_kwargs={'star':True}, 
-            date_filter={}, 
             seed=8888,
             tresh={'gpsim':0.10, 'gzs':0}):
         
         # hotspot fit
-        fin_gdf = self.get_spots_df(df_col_dict, sum_count, weight, weight_kwargs, glocal_kwargs, date_filter, seed)
+        fin_gdf = self.get_spots_df(weight, weight_kwargs, glocal_kwargs, seed)
         # merge in geo data
         fin_gdf = pd.merge(self.gdf, fin_gdf, how='left', left_on=self.gdf_admin_col, right_on=self.gdf_admin_col)
         
@@ -159,16 +167,17 @@ class HotSpot:
                            Line2D([0], [0], marker='o', color='w', label='Not significant',
                                   markerfacecolor='Grey', markersize=10)]
         # Title
-        dct = fin_gdf.loc[0, 'params']
-        if 'col_val' in dct.keys():
-            col = dct['col_val']
+        fil = fin_gdf.loc[0, 'filter']
+        par = fin_gdf.loc[0, 'params']
+        if 'col_val' in fil.keys():
+            col = fil['col_val']
         else: 
-            col = dct['df_col']
-        if 'start_date' in dct.keys():
-            date = f"- {dct['start_date'].year}/{dct['start_date'].month}/{dct['start_date'].day} to {dct['end_date'].year}/{dct['end_date'].month}/{dct['end_date'].day}"
+            col = fil['df_col']
+        if 'start_date' in fil.keys():
+            date = f"- {fil['start_date'].year}/{fil['start_date'].month}/{fil['start_date'].day} to {fil['end_date'].year}/{fil['end_date'].month}/{fil['end_date'].day}"
         else:
             date = ''
-        title = f"{col} {dct['sum_count']} - weight {dct['weight']} {date}"
+        title = f"{col} {fil['sum_count']} - weight {par['weight']} {date}"
         
         # Static map
         hmap = colors.ListedColormap(['lightgrey', 'red', 'blue'])

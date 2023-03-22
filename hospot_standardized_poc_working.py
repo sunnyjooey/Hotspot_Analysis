@@ -45,11 +45,22 @@ df1 = (spark.read
 df1 = df1.filter(df1.CountryFK==201)
 df1 = df1.toPandas()
 
+# Convert ACLED Dates to pd
+def convert_dt(value):
+    valstr = str(value)
+    date_clean = dt.datetime(year=int(valstr[0:4]), month=int(valstr[4:6]), day=int(valstr[6:8]))
+    return date_clean
+
+df1.loc[:, 'TimeFK_Event_Date'] = df1['TimeFK_Event_Date'].apply(lambda x: convert_dt(x))
+
 # COMMAND ----------
 
 # undss data
 df2 = pd.read_excel('/dbfs/FileStore/df/undss/sahel_incident_data.xlsx')
 df2 = df2[df2['Country']=='NIGER']
+
+# change date column to datetime
+df2.loc[:, 'Date'] = pd.to_datetime(df2['Date'])
 
 # COMMAND ----------
 
@@ -60,16 +71,13 @@ poly = gpd.read_file('./niger/admin1/NER_adm01_feb2018.shp')
 
 # dict of date filter
 date_filter = {'date_col':'Date', 'start_date': dt.datetime(2020,1,1), 'end_date':dt.datetime(2023,2,1)}
-# change date column to datetime
-df2.loc[:, date_filter['date_col']] = pd.to_datetime(df2[date_filter['date_col']])
-
-# instantiate
-hs = HotSpot(poly, df2, 'adm_01', 'Admin1')
 
 # COMMAND ----------
 
-# will not work
-hs_df = hs.get_spots_df({'df_col':'IED'}, 'sum', 'q', date_filter=date_filter)
+# instantiate
+hs = HotSpot(poly, df2, gdf_admin_col='adm_01', df_admin_col='Admin1')
+# filter/process - will not work
+hs.process_df({'df_col':'IED'}, 'sum', date_filter, 'admin')
 
 # COMMAND ----------
 
@@ -86,33 +94,28 @@ hs.correct_df_admin(admin1_map)
 # COMMAND ----------
 
 # now will work
-hs_df = hs.get_spots_df({'df_col':'IED'}, 'sum', 'q', date_filter=date_filter)
+hs.process_df({'df_col':'IED'}, 'sum', date_filter, 'admin')
+hs.processed_df
+
+# COMMAND ----------
+
+hs_df = hs.get_spots_df('q')
 hs_df
 
 # COMMAND ----------
 
-hs.get_spots_map({'df_col':'IED'}, 'sum', 'q', date_filter=date_filter)
+hs.get_spots_map('q')
 
 # COMMAND ----------
 
-# Convert ACLED Dates to pd
-def convert_dt(value):
-    valstr = str(value)
-    date_clean = dt.datetime(year=int(valstr[0:4]), month=int(valstr[4:6]), day=int(valstr[6:8]))
-    return date_clean
-
-df1.loc[:, 'TimeFK_Event_Date'] = df1['TimeFK_Event_Date'].apply(lambda x: convert_dt(x))
-
-# COMMAND ----------
-
-# instantiate
+# instantiate / process
 hs = HotSpot(poly, df1, 'adm_01', None, 'ACLED_Latitude', 'ACLED_Longitude')
-hs_df = hs.get_spots_df({'df_col':'ACLED_Event_Type', 'col_val':'Protests'}, 'count', 'q')
-hs_df
+hs.process_df({'df_col':'ACLED_Event_Type', 'col_val':'Protests'}, 'count', {}, 'coord')
 
 # COMMAND ----------
 
-hs.get_spots_map({'df_col':'ACLED_Event_Type', 'col_val':'Protests'}, 'count', 'q')
+# map
+hs.get_spots_map('q')
 
 # COMMAND ----------
 
