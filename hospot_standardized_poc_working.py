@@ -65,19 +65,19 @@ df2.loc[:, 'Date'] = pd.to_datetime(df2['Date'])
 # COMMAND ----------
 
 # shapefile niger
-poly = gpd.read_file('./niger/admin1/NER_adm01_feb2018.shp')
+poly = gpd.read_file('./niger/admin2/NER_adm02_feb2018.shp')
 
 # COMMAND ----------
 
 # dict of date filter
-date_filter = {'date_col':'Date', 'start_date': dt.datetime(2020,1,1), 'end_date':dt.datetime(2023,2,1)}
+date_filter = {'date_col':'Date', 'start_date': dt.datetime(2022,8,1), 'end_date':dt.datetime(2023,1,31)}
 
 # COMMAND ----------
 
 # instantiate
-hs = HotSpot(poly, df2, gdf_admin_col='adm_01', df_admin_col='Admin1')
+hs = HotSpot(poly, df2, gdf_admin_col='adm_02', df_admin_col='Admin2')
 # filter/process - will not work
-hs.process_df({'df_col':'IED'}, 'sum', date_filter, 'admin')
+hs.process_df({'df_col':'VBIED'}, 'sum', date_filter, 'admin')
 
 # COMMAND ----------
 

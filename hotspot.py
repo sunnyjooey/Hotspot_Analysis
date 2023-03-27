@@ -29,6 +29,7 @@ class HotSpot:
         df_admin_vals = self.df[self.df_admin_col].unique()
         gdf_admin_vals = self.gdf[self.gdf_admin_col].unique()
         bad_vals = [x for x in df_admin_vals if x not in gdf_admin_vals]
+        bad_vals.sort()
         return bad_vals
     
     def correct_df_admin(self, adjust_dict):
