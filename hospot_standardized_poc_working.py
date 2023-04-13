@@ -7,8 +7,9 @@
 
 import pandas as pd
 import datetime as dt
+from dateutil.relativedelta import relativedelta
 import geopandas as gpd
-from hotspot import HotSpot
+from hotspot import HotSpot, perdelta
 
 # COMMAND ----------
 
@@ -60,27 +61,28 @@ hs_df
 
 # COMMAND ----------
 
-# produce date ranges
-from dateutil.relativedelta import relativedelta
-def perdelta(start, end, delta):
-    lst = []
-    curr = start
-    while curr < end:
-        s = curr
-        curr += delta
-        e = curr + relativedelta(days=-1)
-        lst.append({'start_date':s, 'end_date':e})
-    return lst
+# collect
+fin_df = pd.DataFrame()
+prm_df = pd.DataFrame()
 
-dlst = perdelta(dt.datetime(2012, 1, 1), dt.datetime(2022, 12, 31), relativedelta(years=1))
-
-# COMMAND ----------
-
-# dict of date filter
+# cycle through date ranges
 for date_filter in dlst:
     date_filter.update({'date_col': 'eventdate'})
     hs.process_df({'tgt_col':'mtvincidentone', 'agg_typ':'count'}, {'mtvincidentone':['Elections']}, date_filter, 'admin')
-    hs.get_spots_map('q')
+    d = hs.get_spots_df('q')
+    
+    # split dataframe to save
+    sub = d.loc[:, [hs.gdf_admin_col, 'num', 'Gzs', 'Gpsim']]
+    sub['start_date'] = [date_filter['start_date']] * sub.shape[0]
+    sub['param_id'] = [d.loc[0,'process_params']['id']] * sub.shape[0]
+    fin_df = pd.concat([fin_df, sub], ignore_index=True)
+    
+    # save params
+    one_ln = pd.DataFrame({'param_id': [d.loc[0,'process_params']['id']], 'process_params': [d.loc[0,'process_params']], 'model_params': [d.loc[0, 'model_params']]})
+    prm_df = pd.concat([prm_df, one_ln], ignore_index=True)
+
+# fin_df.to_csv()
+# prm_df.to_csv()
 
 # COMMAND ----------
 
