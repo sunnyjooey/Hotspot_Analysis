@@ -51,7 +51,7 @@ class HotSpot:
         return bad_vals
     
     def correct_df_admin(self, adjust_dict):
-        df = self.df
+        df = self.df.copy()
         df[self.df_admin_col] = df[self.df_admin_col].apply(lambda x: adjust_dict[x] if x in adjust_dict.keys() else x)
         df = df[(df[self.df_admin_col] != 'drop') & (~df[self.df_admin_col].isnull())]
         self.df = df
@@ -74,10 +74,9 @@ class HotSpot:
             
         ##### filter
         # filter to subset of data by date
+        df = self.df.copy()
         if len(date_dict) > 0:
-            df = self.df.loc[(self.df[date_dict['date_col']] >= date_dict['start_date']) & (self.df[date_dict['date_col']] <= date_dict['end_date']), :]
-        else:
-            df = self.df
+            df = df.loc[(df[date_dict['date_col']] >= date_dict['start_date']) & (df[date_dict['date_col']] <= date_dict['end_date']), :]        
             
         # filter to subset of data by column values
         for col, val_lst in filter_dict.items():
@@ -106,7 +105,7 @@ class HotSpot:
         elif sum_count == 'count':
             analysis_df = df[[self.gdf_admin_col, df_col]].groupby([self.gdf_admin_col]).count().reset_index()
         else:
-            raise Exception("sum_count must be 'sum' or 'count'")
+            raise Exception("'agg_typ' in 'target_dict' must be 'sum' or 'count'")
         analysis_df.rename(columns={df_col:'num'}, inplace=True)
         
         ##### save
@@ -116,11 +115,10 @@ class HotSpot:
         target_dict.update(filter_dict)
         target_dict.update(date_dict)
         target_dict.pop('date_col', None)
-        self.process_params = target_dict
         
         ##### set attribute
         self.processed_df = analysis_df
-        
+        self.process_params = target_dict
         
     def get_spots_df(
             self, 
@@ -134,7 +132,7 @@ class HotSpot:
         if self.processed_df is None:
             raise Exception("'process_df' first!")
         else:
-            analysis_df = self.processed_df
+            analysis_df = self.processed_df.copy()
             
         # merge with geo dataframe
         fin_gdf = pd.merge(self.gdf[[self.gdf_admin_col]], analysis_df, how='left', left_on=self.gdf_admin_col, right_on=self.gdf_admin_col)
