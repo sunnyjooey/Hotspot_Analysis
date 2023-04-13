@@ -12,112 +12,75 @@ from hotspot import HotSpot
 
 # COMMAND ----------
 
-# MAGIC %sh
-# MAGIC curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
-# MAGIC curl https://packages.microsoft.com/config/ubuntu/16.04/prod.list > /etc/apt/sources.list.d/mssql-release.list
-# MAGIC apt-get update
-# MAGIC ACCEPT_EULA=Y apt-get install msodbcsql17
-# MAGIC exit
-
-# COMMAND ----------
-
-from pyspark.sql import SparkSession
-from pyspark.dbutils import DBUtils
-
-spark = SparkSession.builder.getOrCreate()
-dbutils = DBUtils(spark)
-
-database_host = dbutils.secrets.get(scope='warehouse_scope', key='database_host')
-database_port = dbutils.secrets.get(scope='warehouse_scope', key='database_port')
-user = dbutils.secrets.get(scope='warehouse_scope', key='user')
-password = dbutils.secrets.get(scope='warehouse_scope', key='password')
-database_name = "UNDP_DW_CRD"
-table = "dbo.CRD_ACLED"
-url = f"jdbc:sqlserver://{database_host}:{database_port};databaseName={database_name};"
-
-df1 = (spark.read
-  .format("com.microsoft.sqlserver.jdbc.spark")
-  .option("url", url)
-  .option("dbtable", table)
-  .option("user", user)
-  .option("password", password)
-  .load()
-)
-
-df1 = df1.filter(df1.CountryFK==201)
-df1 = df1.toPandas()
-
-# Convert ACLED Dates to pd
-def convert_dt(value):
-    valstr = str(value)
-    date_clean = dt.datetime(year=int(valstr[0:4]), month=int(valstr[4:6]), day=int(valstr[6:8]))
-    return date_clean
-
-df1.loc[:, 'TimeFK_Event_Date'] = df1['TimeFK_Event_Date'].apply(lambda x: convert_dt(x))
-
-# COMMAND ----------
-
-# undss data
-df2 = pd.read_excel('/dbfs/FileStore/df/undss/sahel_incident_data.xlsx')
-df2 = df2[df2['Country']=='NIGER']
-
+# bangladesh data
+df2 = pd.read_csv('/dbfs/FileStore/df/bangladesh/all_political.csv')
 # change date column to datetime
-df2.loc[:, 'Date'] = pd.to_datetime(df2['Date'])
+df2.loc[:, 'eventdate'] = pd.to_datetime(df2['eventdate'])
+df2.head(3)
 
 # COMMAND ----------
 
 # shapefile niger
-poly = gpd.read_file('./niger/admin2/NER_adm02_feb2018.shp')
+poly = gpd.read_file('./bangladesh/admin1/bgd_admbnda_adm1_bbs_20201113.shp')
 
 # COMMAND ----------
 
 # dict of date filter
-date_filter = {'date_col':'Date', 'start_date': dt.datetime(2022,8,1), 'end_date':dt.datetime(2023,1,31)}
+date_filter = {'date_col':'eventdate', 'start_date': dt.datetime(2022,1,1), 'end_date':dt.datetime(2022,12,31)}
 
 # COMMAND ----------
 
 # instantiate
-hs = HotSpot(poly, df2, gdf_admin_col='adm_02', df_admin_col='Admin2')
+hs = HotSpot(poly, df2, gdf_admin_col='ADM1_EN', df_admin_col='division')
+
+# COMMAND ----------
+
 # filter/process - will not work
-hs.process_df({'df_col':'VBIED'}, 'sum', date_filter, 'admin')
+hs.process_df({'tgt_col':'mtvincidentone', 'agg_typ':'count'}, {'mtvincidentone':['Elections']}, date_filter, 'admin')
 
 # COMMAND ----------
 
 # correct admin 1 names
-admin1_map = {'agadez': 'Agadez',
-      'zinder': 'Zinder',
-      'maradi': 'Maradi',
-      'Tllaberi':'Tillabéri',
-      'Tillabery':'Tillabéri',
-      '0': 'drop'}
+admin1_map = {'Barishal': 'Barisal',
+      'Chattogram': 'Chittagong'}
 
 hs.correct_df_admin(admin1_map)
 
 # COMMAND ----------
 
 # now will work
-hs.process_df({'df_col':'IED'}, 'sum', date_filter, 'admin')
+hs.process_df({'tgt_col':'mtvincidentone', 'agg_typ':'count'}, {'mtvincidentone':['Elections']}, date_filter, 'admin')
 hs.processed_df
 
 # COMMAND ----------
 
+# get hot spots - queen method
 hs_df = hs.get_spots_df('q')
 hs_df
 
 # COMMAND ----------
 
-hs.get_spots_map('q')
+# produce date ranges
+from dateutil.relativedelta import relativedelta
+def perdelta(start, end, delta):
+    lst = []
+    curr = start
+    while curr < end:
+        s = curr
+        curr += delta
+        e = curr + relativedelta(days=-1)
+        lst.append({'start_date':s, 'end_date':e})
+    return lst
+
+dlst = perdelta(dt.datetime(2012, 1, 1), dt.datetime(2022, 12, 31), relativedelta(years=1))
 
 # COMMAND ----------
 
-# instantiate / process
-hs = HotSpot(poly, df1, 'adm_01', None, 'ACLED_Latitude', 'ACLED_Longitude')
-hs.process_df({'df_col':'ACLED_Event_Type', 'col_val':'Protests'}, 'count', {}, 'coord')
-
-# COMMAND ----------
-
-# map
-hs.get_spots_map('q')
+# dict of date filter
+for date_filter in dlst:
+    date_filter.update({'date_col': 'eventdate'})
+    hs.process_df({'tgt_col':'mtvincidentone', 'agg_typ':'count'}, {'mtvincidentone':['Elections']}, date_filter, 'admin')
+    hs.get_spots_map('q')
 
 # COMMAND ----------
 
